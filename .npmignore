@@ -1,0 +1,33 @@
+# Source files
+src/
+tsconfig.json
+
+# Development
+.github/
+.vscode/
+.editorconfig
+.eslintrc.cjs
+.prettierrc
+
+# Tests and examples
+tests/
+examples/
+
+# Documentation source
+docs/
+
+# Build tools
+scripts/
+
+# Git
+.git/
+.gitignore
+
+# Environment
+.env
+.env.example
+
+# Misc
+*.md
+!README.md
+
