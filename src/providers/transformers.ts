@@ -4,16 +4,55 @@
  * 初回起動時に自動でモデルをダウンロード（~/.cache/huggingface/）
  */
 
-import { pipeline, env } from '@xenova/transformers';
 import type {
   TranslateProvider,
   TranslateOptions,
   TranslateResult,
 } from './provider.js';
 
-// Transformers.jsのキャッシュ設定
-env.allowLocalModels = true;
-env.allowRemoteModels = true;
+type TransformersModule = typeof import('@xenova/transformers');
+
+const ORT_LOG_LEVEL_MAP: Record<
+  NonNullable<TransformersConfig['logLevel']>,
+  string
+> = {
+  verbose: '0',
+  info: '1',
+  warning: '2',
+  error: '3',
+  fatal: '4',
+};
+
+let transformersModulePromise: Promise<TransformersModule> | null = null;
+
+async function loadTransformersModule(
+  desiredLogLevel?: TransformersConfig['logLevel']
+): Promise<TransformersModule> {
+  if (!transformersModulePromise) {
+    if (desiredLogLevel) {
+      applyOrtLogLevel(desiredLogLevel);
+    }
+
+    transformersModulePromise = import('@xenova/transformers').then((mod) => {
+      mod.env.allowLocalModels = true;
+      mod.env.allowRemoteModels = true;
+      return mod;
+    });
+  }
+
+  return transformersModulePromise;
+}
+
+function applyOrtLogLevel(level: TransformersConfig['logLevel']): void {
+  if (!level) {
+    return;
+  }
+
+  const mapped = ORT_LOG_LEVEL_MAP[level];
+  if (mapped) {
+    process.env.ORT_LOG_SEVERITY_LEVEL = mapped;
+  }
+}
 
 /**
  * Transformers.jsの翻訳結果の型定義
@@ -30,6 +69,10 @@ export interface TransformersConfig {
   model?: string;
   /** タイムアウト（ミリ秒） */
   timeout?: number;
+  /** ONNX Runtimeのログレベル */
+  logLevel?: 'verbose' | 'info' | 'warning' | 'error' | 'fatal';
+  /** 進捗ログなどを表示しない */
+  quiet?: boolean;
 }
 
 /**
@@ -42,10 +85,20 @@ export class TransformersProvider implements TranslateProvider {
   private timeout: number;
   private translatorPipeline: any = null;
   private isInitializing = false;
+  private quiet: boolean;
+  private logLevel: TransformersConfig['logLevel'];
+  private transformersModule: TransformersModule | null = null;
+  private restoreStderrWrite?: () => void;
 
   constructor(config?: TransformersConfig) {
     this.model = config?.model || 'Xenova/opus-mt-ja-en';
     this.timeout = config?.timeout || 30000; // 30秒
+    this.quiet = config?.quiet ?? false;
+    this.logLevel = config?.logLevel ?? 'warning';
+
+    if (this.quiet) {
+      this.suppressOnnxRuntimeWarnings();
+    }
   }
 
   /**
@@ -120,25 +173,39 @@ export class TransformersProvider implements TranslateProvider {
     try {
       // 初回はモデルダウンロードのため時間がかかる（約300MB）
       // 2回目以降はキャッシュから読み込むため高速
-      this.translatorPipeline = await pipeline(
-        'translation',
-        this.model,
-        {
-          // 進捗表示を有効化（初回ダウンロード時）
-          progress_callback: (progress: any) => {
-            if (progress.status === 'downloading') {
-              const percent = progress.progress
-                ? Math.round(progress.progress)
-                : 0;
-              process.stderr.write(
-                `\rDownloading model... ${percent}% (${progress.file})`
-              );
-            } else if (progress.status === 'done') {
-              process.stderr.write('\rModel ready!                    \n');
-            }
-          },
+      const restoreWarn = this.quiet ? this.suppressTokenizerWarning() : null;
+
+      try {
+        const { pipeline } = await this.ensureTransformersModule();
+
+        this.translatorPipeline = await pipeline(
+          'translation',
+          this.model,
+          {
+            // 進捗表示を有効化（初回ダウンロード時）
+            progress_callback: (progress: any) => {
+              if (this.quiet) {
+                return;
+              }
+
+              if (progress.status === 'downloading') {
+                const percent = progress.progress
+                  ? Math.round(progress.progress)
+                  : 0;
+                process.stderr.write(
+                  `\rDownloading model... ${percent}% (${progress.file})`
+                );
+              } else if (progress.status === 'done') {
+                process.stderr.write('\rModel ready!                    \n');
+              }
+            },
+          }
+        );
+      } finally {
+        if (restoreWarn) {
+          restoreWarn();
         }
-      );
+      }
     } finally {
       this.isInitializing = false;
     }
@@ -176,5 +243,95 @@ export class TransformersProvider implements TranslateProvider {
     }
     return fallback;
   }
-}
 
+  /**
+   * ONNX Runtimeのログレベルを設定
+   */
+  private configureOnnxLogLevel(module: TransformersModule): void {
+    if (!this.logLevel) {
+      return;
+    }
+
+    const onnxEnv = (module.env as any)?.backends?.onnx;
+    if (!onnxEnv) {
+      return;
+    }
+
+    try {
+      if (typeof onnxEnv.logLevel !== 'undefined') {
+        onnxEnv.logLevel = this.logLevel;
+      }
+    } catch {
+      // ログレベル設定に失敗しても致命的ではないので無視
+    }
+  }
+
+  private async ensureTransformersModule(): Promise<TransformersModule> {
+    if (this.transformersModule) {
+      return this.transformersModule;
+    }
+
+    const module = await loadTransformersModule(this.logLevel);
+    this.configureOnnxLogLevel(module);
+    this.transformersModule = module;
+    return module;
+  }
+
+  /**
+   * 特定のTokenizer警告を抑制
+   */
+  private suppressTokenizerWarning(): (() => void) {
+    const originalWarn = console.warn;
+    const pattern = /`MarianTokenizer` is not yet supported/;
+
+    console.warn = (...args: Parameters<typeof console.warn>) => {
+      if (args.length > 0 && typeof args[0] === 'string' && pattern.test(args[0])) {
+        return;
+      }
+      originalWarn(...args);
+    };
+
+    return () => {
+      console.warn = originalWarn;
+    };
+  }
+
+  /**
+   * onnxruntimeからの警告ログを抑制（静音モード時）
+   */
+  private suppressOnnxRuntimeWarnings(): void {
+    if (this.restoreStderrWrite) {
+      return;
+    }
+
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    const pattern = /\[W:onnxruntime:/;
+
+    const quietWrite: typeof process.stderr.write = (chunk: any, encoding?: any, callback?: any) => {
+      const message = this.normalizeChunk(chunk, encoding);
+      if (message && pattern.test(message)) {
+        if (typeof callback === 'function') {
+          callback();
+        }
+        return true;
+      }
+
+      return originalWrite(chunk, encoding as any, callback);
+    };
+
+    process.stderr.write = quietWrite;
+    this.restoreStderrWrite = () => {
+      process.stderr.write = originalWrite;
+    };
+  }
+
+  private normalizeChunk(chunk: any, encoding?: BufferEncoding): string {
+    if (typeof chunk === 'string') {
+      return chunk;
+    }
+    if (Buffer.isBuffer(chunk)) {
+      return chunk.toString(encoding ?? 'utf8');
+    }
+    return '';
+  }
+}
