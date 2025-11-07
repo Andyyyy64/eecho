@@ -2,7 +2,6 @@
 
 import '../config/onnxEnv.js';
 
-import { readFileSync } from 'node:fs';
 import { stdin, stdout, stderr } from 'node:process';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +11,7 @@ import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { Translator } from '../core/translator.js';
 import { TransformersProvider } from '../providers/transformers.js';
 import type { TranslationOutput } from '../core/translator.js';
+import { showUsage, showVersion } from '../utils/cli/index.js';
 
 interface CliOptions {
     verbose: boolean;
@@ -62,21 +62,6 @@ async function readStdin(): Promise<string> {
 function exitWithError(message: string, code = 1): void {
     stderr.write(`Error: ${message}\n`);
     process.exit(code);
-}
-
-function showUsage(): void {
-    const usage = `Usage: eecho [--verbose] <text>\n`;
-    stdout.write(usage);
-}
-
-function showVersion(): void {
-    try {
-        const packageJsonPath = new URL('../../package.json', import.meta.url);
-        const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-        stdout.write(`eecho v${packageJson.version}\n`);
-    } catch {
-        stdout.write('eecho (version unknown)\n');
-    }
 }
 
 function parseCliArgs(rawArgs: string[]): { args: string[]; options: CliOptions } {
@@ -322,12 +307,13 @@ async function main(): Promise<void> {
     }
 
     if (args.includes('-h') || args.includes('--help')) {
-        showUsage();
+        showUsage(stdout, { workerDir });
         process.exit(0);
     }
 
     if (args.includes('-v') || args.includes('--version')) {
-        showVersion();
+        const packageJsonPath = fileURLToPath(new URL('../../package.json', import.meta.url));
+        showVersion(stdout, { packageJsonPath });
         process.exit(0);
     }
 
@@ -342,7 +328,7 @@ async function main(): Promise<void> {
     } else if (args.length > 0) {
         inputText = args.join(' ');
     } else {
-        showUsage();
+        showUsage(stdout, { workerDir });
         process.exit(1);
     }
 
