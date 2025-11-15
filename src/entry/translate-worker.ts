@@ -4,8 +4,8 @@ import { promises as fs } from 'node:fs';
 import { watch } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { Translator } from '../core/translator.js';
-import { TransformersProvider } from '../providers/transformers.js';
+import { Translator } from '../core/translator';
+import { TransformersProvider } from '../providers/transformers';
 
 interface WorkerRequest {
     text?: string;

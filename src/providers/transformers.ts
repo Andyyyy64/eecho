@@ -8,7 +8,7 @@ import type {
   TranslateProvider,
   TranslateOptions,
   TranslateResult,
-} from './provider.js';
+} from './provider';
 
 type TransformersModule = typeof import('@xenova/transformers');
 

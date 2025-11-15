@@ -15,7 +15,8 @@
   ],
   "scripts": {
     "dev": "tsx src/entry/eecho.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsup",
+    "check": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.30",
+    "tsup": "^8.5.1",
     "tsx": "^4.8.0",
     "typescript": "^5.6.3"
   },

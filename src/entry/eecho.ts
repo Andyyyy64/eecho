@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import '../config/onnxEnv.js';
+import '../config/onnxEnv';
 
 import { readFileSync } from 'node:fs';
 import { stdin, stdout, stderr } from 'node:process';
@@ -9,9 +9,9 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
-import { Translator } from '../core/translator.js';
-import { TransformersProvider } from '../providers/transformers.js';
-import type { TranslationOutput } from '../core/translator.js';
+import { Translator } from '../core/translator';
+import { TransformersProvider } from '../providers/transformers';
+import type { TranslationOutput } from '../core/translator';
 
 interface CliOptions {
     verbose: boolean;

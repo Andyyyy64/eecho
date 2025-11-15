@@ -3,9 +3,9 @@
  * 入力→検出→翻訳→出力の流れを管理
  */
 
-import { detectJapanese } from '../utils/detectJapanese.js';
-import { TransformersProvider } from '../providers/transformers.js';
-import type { TranslateProvider } from '../providers/provider.js';
+import { detectJapanese } from '../utils/detectJapanese';
+import { TransformersProvider } from '../providers/transformers';
+import type { TranslateProvider } from '../providers/provider';
 
 /**
  * 翻訳結果
@@ -31,7 +31,7 @@ export class Translator {
   private provider: TranslateProvider;
 
   constructor(provider?: TranslateProvider) {
-    // デフォルトはTransformersプロバイダを使用（追加セットアップ不要）
+    // デフォルトはTransformersプロバイダを使用
     this.provider = provider || new TransformersProvider();
   }
 
