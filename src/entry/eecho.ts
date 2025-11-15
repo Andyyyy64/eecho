@@ -46,6 +46,7 @@ const workerDebugEnabled = process.env.EECHO_DEBUG === '1';
 // quiet / verbose 切替でTranslatorを使い分けるための簡易キャッシュ
 const translatorCache: TranslatorCacheEntry[] = [];
 const onnxWarningPattern = /\[W:onnxruntime:/;
+let workerStartupNoticeShown = false;
 
 async function readStdin(): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -159,6 +160,14 @@ async function translateLocally(
     return translator.translate(text.trim());
 }
 
+function showWorkerStartupNotice(): void {
+    if (workerStartupNoticeShown) {
+        return;
+    }
+    workerStartupNoticeShown = true;
+    stderr.write('翻訳ワーカーを起動中... (初回のみ表示されます)\n');
+}
+
 function randomRequestId(): string {
     return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
@@ -180,6 +189,11 @@ async function readPid(): Promise<number | null> {
     }
 }
 
+/**
+ * ワーカープロセスの生存確認
+ * PIDファイルからPIDを読み取り、process.kill(pid, 0)でプロセス存在を確認
+ * シグナル0は実際には送信せず、プロセスの存在チェックのみ行う
+ */
 async function isWorkerAlive(): Promise<boolean> {
     const pid = await readPid();
     if (!pid) {
@@ -189,11 +203,18 @@ async function isWorkerAlive(): Promise<boolean> {
         process.kill(pid, 0);
         return true;
     } catch {
+        // プロセスが存在しない場合、PIDファイルも削除（古いPIDファイルの残存を防ぐ）
         await unlink(pidPath).catch(() => undefined);
         return false;
     }
 }
 
+/**
+ * バックグラウンドワーカープロセスを起動
+ * detached: true により、ワーカーは親プロセス（CLI）から独立したプロセスグループで実行される
+ * child.unref() により、CLIプロセスが終了してもワーカーは継続して動作する
+ * stdio: 'ignore' でワーカーの出力を抑制（デバッグ時のみ 'inherit' で表示）
+ */
 async function spawnWorker(): Promise<void> {
     await ensureWorkerDir();
     const child = spawn(process.execPath, [workerScriptPath, '--queue', workerDir], {
@@ -203,6 +224,11 @@ async function spawnWorker(): Promise<void> {
     child.unref();
 }
 
+/**
+ * ワーカーの起動完了を待機
+ * spawnWorker()後、ワーカーがPIDファイルを作成するまでポーリング（200ms間隔）
+ * タイムアウト10秒で起動失敗と判定
+ */
 async function waitForWorkerReady(timeoutMs = 10000): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -214,20 +240,30 @@ async function waitForWorkerReady(timeoutMs = 10000): Promise<void> {
     throw new Error('Worker failed to start');
 }
 
+/**
+ * ワーカーの起動を保証
+ * 既存ワーカーが生存していればそのまま使用、死んでいれば自動再起動
+ * 初回起動時のみユーザーに通知を表示
+ */
 async function ensureWorkerRunning(): Promise<void> {
-    // 既存ワーカーが死んでいたら再起動する。起動完了まで待ってから戻す。
     if (await isWorkerAlive()) {
         return;
     }
+    showWorkerStartupNotice();
     await spawnWorker();
     await waitForWorkerReady();
 }
 
+/**
+ * ワーカーからの応答ファイルを待機
+ * ファイルベースのキューイング: ワーカーが res-<id>.json を生成するまでポーリング（100ms間隔）
+ * ENOENT（ファイル不存在）は正常な待機状態、それ以外のエラーは即座に伝播
+ * タイムアウト60秒で失敗と判定
+ */
 async function waitForResponseFile(
     responsePath: string,
     timeoutMs = 60000
 ): Promise<WorkerResponse> {
-    // 応答ファイルが生成されるまでポーリングする。ENOENT以外のエラーは即時伝播。
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
         try {
@@ -244,6 +280,11 @@ async function waitForResponseFile(
     throw new Error('Worker response timeout');
 }
 
+/**
+ * ワーカーにリクエストをキューイング
+ * ファイルベースの非同期通信: req-<id>.json を書き込み、ワーカーが res-<id>.json で応答
+ * ワーカーが存在しない場合は自動起動してからリクエスト送信
+ */
 async function queueWorkerRequest(payload: WorkerRequestPayload): Promise<WorkerResponse> {
     await ensureWorkerDir();
     const id = randomRequestId();
@@ -276,6 +317,11 @@ async function shutdownWorkerProcess(): Promise<void> {
     }
 }
 
+/**
+ * 翻訳実行のエントリーポイント
+ * verbose時はローカル翻訳（詳細ログ表示のため）
+ * 通常時はワーカー経由で翻訳、失敗時は自動フォールバック（ワーカー死/タイムアウト/エラー時）
+ */
 async function runTranslation(
     text: string,
     options: CliOptions
